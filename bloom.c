@@ -16,6 +16,7 @@
 define_commit_slab(bloom_filter_slab, struct bloom_filter);
 
 static struct bloom_filter_slab bloom_filters;
+static int bloom_filter_slab_initialized;
 
 struct pathmap_hash_entry {
     struct hashmap_entry entry;
@@ -263,7 +264,10 @@ void add_key_to_filter(const struct bloom_key *key,
 
 void init_bloom_filters(void)
 {
+	if (bloom_filter_slab_initialized)
+		return;
 	init_bloom_filter_slab(&bloom_filters);
+	bloom_filter_slab_initialized = 1;
 }
 
 static void free_one_bloom_filter(struct bloom_filter *filter)
@@ -276,6 +280,7 @@ static void free_one_bloom_filter(struct bloom_filter *filter)
 void deinit_bloom_filters(void)
 {
 	deep_clear_bloom_filter_slab(&bloom_filters, free_one_bloom_filter);
+	bloom_filter_slab_initialized = 0;
 }
 
 struct bloom_keyvec *bloom_keyvec_new(const char *path, size_t len,
@@ -501,7 +506,7 @@ struct bloom_filter *get_or_compute_bloom_filter(struct repository *r,
 		struct hashmap_iter iter;
 
 		for (i = 0; i < diff_queued_diff.nr; i++) {
-			const char *path = diff_queued_diff.queue[i]->two->path;
+			char *path = diff_queued_diff.queue[i]->two->path;
 
 			/*
 			 * Add each leading directory of the changed file, i.e. for
@@ -523,7 +528,7 @@ struct bloom_filter *get_or_compute_bloom_filter(struct repository *r,
 					free(e);
 
 				if (!last_slash)
-					last_slash = (char*)path;
+					last_slash = path;
 				*last_slash = '\0';
 
 			} while (*path);

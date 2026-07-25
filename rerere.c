@@ -403,12 +403,8 @@ static int handle_conflict(struct strbuf *out, struct rerere_io *io,
 			strbuf_addbuf(out, &two);
 			rerere_strbuf_putconflict(out, '>', marker_size);
 			if (ctx) {
-				git_hash_update(ctx, one.buf ?
-						one.buf : "",
-						one.len + 1);
-				git_hash_update(ctx, two.buf ?
-						two.buf : "",
-						two.len + 1);
+				git_hash_update(ctx, one.buf, one.len + 1);
+				git_hash_update(ctx, two.buf, two.len + 1);
 			}
 			break;
 		} else if (hunk == RR_SIDE_1)
@@ -443,7 +439,7 @@ static int handle_path(unsigned char *hash, struct rerere_io *io, int marker_siz
 	struct strbuf buf = STRBUF_INIT, out = STRBUF_INIT;
 	int has_conflicts = 0;
 	if (hash)
-		the_hash_algo->init_fn(&ctx);
+		git_hash_init(&ctx, the_hash_algo);
 
 	while (!io->getline(&buf, io)) {
 		if (is_cmarker(buf.buf, '<', marker_size)) {
@@ -552,7 +548,7 @@ static int check_one_conflict(struct index_state *istate, int i, int *type)
 
 /*
  * Scan the index and find paths that have conflicts that rerere can
- * handle, i.e. the ones that has both stages #2 and #3.
+ * handle, i.e. the ones that have both stages #2 and #3.
  *
  * NEEDSWORK: we do not record or replay a previous "resolve by
  * deletion" for a delete-modify conflict, as that is inherently risky
@@ -994,7 +990,7 @@ static int handle_cache(struct index_state *istate,
 
 	while (pos < istate->cache_nr) {
 		enum object_type type;
-		unsigned long size;
+		size_t size;
 
 		ce = istate->cache[pos++];
 		if (ce_namelen(ce) != len || memcmp(ce->name, path, len))

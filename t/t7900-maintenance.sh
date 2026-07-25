@@ -7,6 +7,9 @@ test_description='git maintenance builtin'
 GIT_TEST_COMMIT_GRAPH=0
 GIT_TEST_MULTI_PACK_INDEX=0
 
+# Ensure that auto-maintenance detaches as usual.
+sane_unset GIT_TEST_MAINT_AUTO_DETACH
+
 test_lazy_prereq XMLLINT '
 	xmllint --version
 '
@@ -32,7 +35,7 @@ test_systemd_analyze_verify () {
 }
 
 test_expect_success 'help text' '
-	test_expect_code 129 git maintenance -h >actual &&
+	git maintenance -h >actual &&
 	test_grep "usage: git maintenance <subcommand>" actual &&
 	test_expect_code 129 git maintenance barf 2>err &&
 	test_grep "unknown subcommand: \`barf'\''" err &&
@@ -42,7 +45,8 @@ test_expect_success 'help text' '
 	test_grep "usage: git maintenance" err
 '
 
-test_expect_success 'run [--auto|--quiet]' '
+test_expect_success 'run [--auto|--quiet] with gc strategy' '
+	test_config maintenance.strategy gc &&
 	GIT_TRACE2_EVENT="$(pwd)/run-no-auto.txt" \
 		git maintenance run 2>/dev/null &&
 	GIT_TRACE2_EVENT="$(pwd)/run-auto.txt" \
@@ -67,6 +71,31 @@ test_expect_success 'maintenance.auto config option' '
 		git -c maintenance.auto=false \
 		commit --quiet --allow-empty -m 3 &&
 	test_subcommand ! git maintenance run --auto --quiet --detach <false
+'
+
+test_expect_success 'gc.auto config option' '
+	GIT_TRACE2_EVENT="$(pwd)/default" git commit --quiet --allow-empty -m 1 &&
+	test_subcommand git maintenance run --auto --quiet --detach <default &&
+	GIT_TRACE2_EVENT="$(pwd)/true" \
+		git -c gc.auto=1 commit --quiet --allow-empty -m 2 &&
+	test_subcommand git maintenance run --auto --quiet --detach <true &&
+	GIT_TRACE2_EVENT="$(pwd)/false" \
+		git -c gc.auto=0 commit --quiet --allow-empty -m 3 &&
+	test_subcommand ! git maintenance run --auto --quiet --detach <false
+'
+
+test_expect_success 'maintenance.auto overrides gc.auto' '
+	test_when_finished "rm -f trace" &&
+
+	test_config maintenance.auto false &&
+	test_config gc.auto 1 &&
+	GIT_TRACE2_EVENT="$(pwd)/trace" git commit --quiet --allow-empty -m 1 &&
+	test_subcommand ! git maintenance run --auto --quiet --detach <trace &&
+
+	test_config maintenance.auto true &&
+	test_config gc.auto 0 &&
+	GIT_TRACE2_EVENT="$(pwd)/trace" git commit --quiet --allow-empty -m 1 &&
+	test_subcommand git maintenance run --auto --quiet --detach <trace
 '
 
 for cfg in maintenance.autoDetach gc.autoDetach
@@ -97,8 +126,12 @@ test_expect_success "maintenance.autoDetach overrides gc.autoDetach" '
 test_expect_success 'register uses XDG_CONFIG_HOME config if it exists' '
 	test_when_finished rm -r .config/git/config &&
 	(
+		# Override HOME so that .gitconfig (which test-lib.sh may
+		# have created, e.g. to set safe.bareRepository) does not
+		# take precedence over the XDG location.
+		HOME=$PWD/must-not-exist &&
 		XDG_CONFIG_HOME=.config &&
-		export XDG_CONFIG_HOME &&
+		export HOME XDG_CONFIG_HOME &&
 		mkdir -p $XDG_CONFIG_HOME/git &&
 		>$XDG_CONFIG_HOME/git/config &&
 		git maintenance register &&
@@ -120,8 +153,12 @@ test_expect_success 'register does not need XDG_CONFIG_HOME config to exist' '
 test_expect_success 'unregister uses XDG_CONFIG_HOME config if it exists' '
 	test_when_finished rm -r .config/git/config &&
 	(
+		# Override HOME so that .gitconfig (which test-lib.sh may
+		# have created, e.g. to set safe.bareRepository) does not
+		# take precedence over the XDG location.
+		HOME=$PWD/must-not-exist &&
 		XDG_CONFIG_HOME=.config &&
-		export XDG_CONFIG_HOME &&
+		export HOME XDG_CONFIG_HOME &&
 		mkdir -p $XDG_CONFIG_HOME/git &&
 		>$XDG_CONFIG_HOME/git/config &&
 		git maintenance register &&
@@ -268,7 +305,7 @@ test_expect_success 'prefetch multiple remotes' '
 	test_cmp_rev refs/remotes/remote2/two refs/prefetch/remotes/remote2/two &&
 
 	git log --oneline --decorate --all >log &&
-	! grep "prefetch" log &&
+	test_grep ! "prefetch" log &&
 
 	test_when_finished git config --unset remote.remote1.skipFetchAll &&
 	git config remote.remote1.skipFetchAll true &&
@@ -358,15 +395,15 @@ test_expect_success 'maintenance.loose-objects.batchSize' '
 
 	GIT_PROGRESS_DELAY=0 \
 	git -C loose-batch maintenance run --no-quiet --task=loose-objects 2>err &&
-	grep "Enumerating objects: 50, done." err &&
+	test_grep "Enumerating objects: 50, done." err &&
 
 	GIT_PROGRESS_DELAY=0 \
 	git -C loose-batch maintenance run --no-quiet --task=loose-objects 2>err &&
-	grep "Enumerating objects: 50, done." err &&
+	test_grep "Enumerating objects: 50, done." err &&
 
 	GIT_PROGRESS_DELAY=0 \
 	git -C loose-batch maintenance run --no-quiet --task=loose-objects 2>err &&
-	grep "Enumerating objects: 2, done." err &&
+	test_grep "Enumerating objects: 2, done." err &&
 
 	GIT_PROGRESS_DELAY=0 \
 	git -C loose-batch maintenance run --no-quiet --task=loose-objects 2>err &&
@@ -424,36 +461,42 @@ test_expect_success 'incremental-repack task' '
 '
 
 test_expect_success EXPENSIVE 'incremental-repack 2g limit' '
-	test_config core.compression 0 &&
+	test_when_finished rm -rf expensive-repo &&
+	git init expensive-repo &&
+	(
+		cd expensive-repo &&
+		git config set core.compression 0 &&
+		git config set maintenance.auto false &&
 
-	for i in $(test_seq 1 5)
-	do
-		test-tool genrandom foo$i $((512 * 1024 * 1024 + 1)) >>big ||
-		return 1
-	done &&
-	git add big &&
-	git commit -qm "Add big file (1)" &&
+		for i in $(test_seq 1 5)
+		do
+			test-tool genrandom foo$i $((512 * 1024 * 1024 + 1)) >>big ||
+			return 1
+		done &&
+		git add big &&
+		git commit -qm "Add big file (1)" &&
 
-	# ensure any possible loose objects are in a pack-file
-	git maintenance run --task=loose-objects &&
+		# ensure any possible loose objects are in a pack-file
+		git maintenance run --task=loose-objects &&
 
-	rm big &&
-	for i in $(test_seq 6 10)
-	do
-		test-tool genrandom foo$i $((512 * 1024 * 1024 + 1)) >>big ||
-		return 1
-	done &&
-	git add big &&
-	git commit -qm "Add big file (2)" &&
+		rm big &&
+		for i in $(test_seq 6 10)
+		do
+			test-tool genrandom foo$i $((512 * 1024 * 1024 + 1)) >>big ||
+			return 1
+		done &&
+		git add big &&
+		git commit -qm "Add big file (2)" &&
 
-	# ensure any possible loose objects are in a pack-file
-	git maintenance run --task=loose-objects &&
+		# ensure any possible loose objects are in a pack-file
+		git maintenance run --task=loose-objects &&
 
-	# Now run the incremental-repack task and check the batch-size
-	GIT_TRACE2_EVENT="$(pwd)/run-2g.txt" git maintenance run \
-		--task=incremental-repack 2>/dev/null &&
-	test_subcommand git multi-pack-index repack \
-		 --no-progress --batch-size=2147483647 <run-2g.txt
+		# Now run the incremental-repack task and check the batch-size
+		GIT_TRACE2_EVENT="$(pwd)/run-2g.txt" git maintenance run \
+			--task=incremental-repack 2>/dev/null &&
+		test_subcommand git multi-pack-index repack \
+			--no-progress --batch-size=2147483647 <run-2g.txt
+	)
 '
 
 run_incremental_repack_and_verify () {
@@ -496,6 +539,7 @@ test_expect_success 'maintenance.incremental-repack.auto' '
 	(
 		cd incremental-repack-true &&
 		git config core.multiPackIndex true &&
+		git config maintenance.auto false &&
 		run_incremental_repack_and_verify
 	)
 '
@@ -506,6 +550,7 @@ test_expect_success 'maintenance.incremental-repack.auto (when config is unset)'
 	(
 		cd incremental-repack-unset &&
 		test_unconfig core.multiPackIndex &&
+		git config maintenance.auto false &&
 		run_incremental_repack_and_verify
 	)
 '
@@ -526,7 +571,16 @@ run_and_verify_geometric_pack () {
 
 	# And verify that there are no loose objects anymore.
 	git count-objects -v >count &&
-	test_grep '^count: 0$' count
+	test_grep '^count: 0$' count &&
+
+	# Verify that no orphaned .idx files were left behind. On
+	# Windows, a missing odb_to_close causes the parent to hold
+	# mmap handles on .idx files, silently preventing their
+	# deletion by the child git-repack process.
+	ls .git/objects/pack/pack-*.idx .git/objects/pack/pack-*.pack |
+	sed "s/\.pack$/.idx/" |
+	sort | uniq -u >orphaned-idx &&
+	test_must_be_empty orphaned-idx
 }
 
 test_expect_success 'geometric repacking task' '
@@ -574,7 +628,18 @@ test_expect_success 'geometric repacking task' '
 
 		# And these two small packs should now be merged via the
 		# geometric repack. The large packfile should remain intact.
+		cp -R .git/objects .git/objects.save &&
 		run_and_verify_geometric_pack 2 &&
+
+		# On Windows, verify the same with legacy delete semantics
+		# that reject deletion of mmap-held .idx files.
+		if test_have_prereq MINGW
+		then
+			rm -rf .git/objects &&
+			mv .git/objects.save .git/objects &&
+			test_env GIT_TEST_LEGACY_DELETE=1 \
+				run_and_verify_geometric_pack 2
+		fi &&
 
 		# If we now add two more objects and repack twice we should
 		# then see another all-into-one repack. This time around
@@ -616,6 +681,7 @@ test_expect_success 'geometric repacking with --auto' '
 	git init repo &&
 	(
 		cd repo &&
+		git config set maintenance.auto false &&
 
 		# An empty repository does not need repacking, except when
 		# explicitly told to do it.
@@ -1007,7 +1073,7 @@ test_expect_success 'register and unregister' '
 	test_when_finished git config --global --unset-all maintenance.repo &&
 
 	test_must_fail git maintenance unregister 2>err &&
-	grep "is not registered" err &&
+	test_grep "is not registered" err &&
 	git maintenance unregister --force &&
 
 	git config --global --add maintenance.repo /existing1 &&
@@ -1041,11 +1107,11 @@ test_expect_success 'register and unregister' '
 	test_cmp before actual &&
 
 	test_must_fail git maintenance unregister 2>err &&
-	grep "is not registered" err &&
+	test_grep "is not registered" err &&
 	git maintenance unregister --force &&
 
 	test_must_fail git maintenance unregister --config-file ./other 2>err &&
-	grep "is not registered" err &&
+	test_grep "is not registered" err &&
 	git maintenance unregister --config-file ./other --force
 '
 
@@ -1134,9 +1200,9 @@ test_expect_success 'start from empty cron table' '
 	# start registers the repo
 	git config --get --global --fixed-value maintenance.repo "$(pwd)" &&
 
-	grep "for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=daily" cron.txt &&
-	grep "for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=hourly" cron.txt &&
-	grep "for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=weekly" cron.txt
+	test_grep "for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=daily" cron.txt &&
+	test_grep "for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=hourly" cron.txt &&
+	test_grep "for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=weekly" cron.txt
 '
 
 test_expect_success 'stop from existing schedule' '
@@ -1153,7 +1219,7 @@ test_expect_success 'stop from existing schedule' '
 test_expect_success 'start preserves existing schedule' '
 	echo "Important information!" >cron.txt &&
 	GIT_TEST_MAINT_SCHEDULER="crontab:test-tool crontab cron.txt" git maintenance start --scheduler=crontab &&
-	grep "Important information!" cron.txt
+	test_grep "Important information!" cron.txt
 '
 
 test_expect_success 'magic markers are correct' '
@@ -1168,8 +1234,8 @@ test_expect_success 'magic markers are correct' '
 test_expect_success 'stop preserves surrounding schedule' '
 	echo "Crucial information!" >>cron.txt &&
 	GIT_TEST_MAINT_SCHEDULER="crontab:test-tool crontab cron.txt" git maintenance stop &&
-	grep "Important information!" cron.txt &&
-	grep "Crucial information!" cron.txt
+	test_grep "Important information!" cron.txt &&
+	test_grep "Crucial information!" cron.txt
 '
 
 test_expect_success 'start and stop macOS maintenance' '
@@ -1199,7 +1265,7 @@ test_expect_success 'start and stop macOS maintenance' '
 	do
 		PLIST="$pfx/Library/LaunchAgents/org.git-scm.git.$frequency.plist" &&
 		test_xmllint "$PLIST" &&
-		grep schedule=$frequency "$PLIST" &&
+		test_grep schedule=$frequency "$PLIST" &&
 		echo "bootout gui/[UID] $PLIST" >>expect &&
 		echo "bootstrap gui/[UID] $PLIST" >>expect || return 1
 	done &&
@@ -1256,7 +1322,7 @@ test_expect_success 'start and stop Windows maintenance' '
 
 	for frequency in hourly daily weekly
 	do
-		grep "/create /tn Git Maintenance ($frequency) /f /xml" args &&
+		test_grep "/create /tn Git Maintenance ($frequency) /f /xml" args &&
 		file=$(ls .git/schedule_${frequency}*.xml) &&
 		test_xmllint "$file" || return 1
 	done &&
@@ -1295,8 +1361,8 @@ test_expect_success 'start and stop Linux/systemd maintenance' '
 	test_systemd_analyze_verify "systemd/user/git-maintenance@daily.service" &&
 	test_systemd_analyze_verify "systemd/user/git-maintenance@weekly.service" &&
 
-	grep "core.askPass=true" "systemd/user/git-maintenance@.service" &&
-	grep "credential.interactive=false" "systemd/user/git-maintenance@.service" &&
+	test_grep "core.askPass=true" "systemd/user/git-maintenance@.service" &&
+	test_grep "credential.interactive=false" "systemd/user/git-maintenance@.service" &&
 
 	printf -- "--user enable --now git-maintenance@%s.timer\n" hourly daily weekly >expect &&
 	test_cmp expect args &&
@@ -1428,6 +1494,64 @@ test_expect_success '--no-detach causes maintenance to not run in background' '
 		GIT_TRACE2_EVENT="$(pwd)/trace.txt" \
 			git maintenance run --no-detach >out 2>&1 &&
 		! test_region maintenance detach trace.txt
+	)
+'
+
+test_expect_success PIPE '--detach holds maintenance lock until daemonized child exits' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+
+		git config maintenance.auto false &&
+		git config core.lockfilepid true &&
+
+		git remote add origin /does/not/exist &&
+		git config set remote.origin.uploadpack "cat fifo-uploadpack" &&
+
+		mkfifo fifo-uploadpack fifo-maint &&
+
+		# Open the maintenance FIFO, as otherwise spawning
+		# git-maintenance(1) would block. Note that we need to open it
+		# as read-write, as otherwise we would block here already.
+		exec 9<>fifo-maint &&
+
+		{ git maintenance run --task=prefetch --detach 7>&9 & } &&
+		parent="$!" &&
+
+		# Reap the parent process so that the exec call below will not
+		# get SIGCHLD.
+		wait "$parent" &&
+
+		# Open the git-upload-pack(1) FIFO for writing, which will
+		# block until the upload-pack script opens it for reading. Once
+		# exec returns, we know that the daemonized child is alive and
+		# pinned.
+		exec 8>fifo-uploadpack &&
+
+		test_path_is_file .git/objects/maintenance.lock &&
+		test_path_is_file .git/objects/"maintenance~pid.lock" &&
+
+		# Verify that the maintenance.lock still exists, and
+		# that it was created by the parent process, not the
+		# child.
+		echo "pid $parent" >expect &&
+		test_cmp expect .git/objects/"maintenance~pid.lock" &&
+
+		# Reopen the maintenance FIFO as read-only so that
+		# git-maintenance(1) is the only writer. This will cause it to
+		# close the FIFO once the process exits.
+		exec 9<&- &&
+		exec 9<fifo-maint &&
+
+		# Close the FIFO used by git-upload-pack(1) to unblock it and
+		# then wait until the maintenance FIFO is closed by
+		# git-maintenance(1), indicating that it has exited.
+		exec 8>&- &&
+		cat <&9 &&
+
+		test_path_is_missing .git/objects/maintenance.lock &&
+		test_path_is_missing .git/objects/"maintenance~pid.lock"
 	)
 '
 

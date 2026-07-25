@@ -13,31 +13,38 @@
 
 static struct multi_pack_index *setup_midx(const char *object_dir)
 {
+	struct odb_source_files *files;
 	struct odb_source *source;
-	setup_git_directory();
+	setup_git_directory(the_repository);
 	source = odb_find_source(the_repository->objects, object_dir);
 	if (!source)
 		source = odb_add_to_alternates_memory(the_repository->objects,
 						      object_dir);
-	return load_multi_pack_index(source);
+	files = odb_source_files_downcast(source);
+
+	return load_multi_pack_index(files->packed);
 }
 
 static int read_midx_file(const char *object_dir, const char *checksum,
 			  int show_objects)
 {
 	uint32_t i;
-	struct multi_pack_index *m;
+	struct multi_pack_index *m, *tip;
+	int ret = 0;
 
-	m = setup_midx(object_dir);
+	m = tip = setup_midx(object_dir);
 
 	if (!m)
 		return 1;
 
 	if (checksum) {
-		while (m && strcmp(hash_to_hex(get_midx_checksum(m)), checksum))
+		while (m && strcmp(midx_get_checksum_hex(m), checksum))
 			m = m->base_midx;
-		if (!m)
-			return 1;
+		if (!m) {
+			ret = error(_("could not find MIDX with checksum %s"),
+				    checksum);
+			goto out;
+		}
 	}
 
 	printf("header: %08x %d %d %d %d\n",
@@ -66,7 +73,7 @@ static int read_midx_file(const char *object_dir, const char *checksum,
 	for (i = 0; i < m->num_packs; i++)
 		printf("%s\n", m->pack_names[i]);
 
-	printf("object-dir: %s\n", m->source->path);
+	printf("object-dir: %s\n", m->source->base.path);
 
 	if (show_objects) {
 		struct object_id oid;
@@ -82,9 +89,10 @@ static int read_midx_file(const char *object_dir, const char *checksum,
 		}
 	}
 
-	close_midx(m);
+out:
+	close_midx(tip);
 
-	return 0;
+	return ret;
 }
 
 static int read_midx_checksum(const char *object_dir)
@@ -94,7 +102,7 @@ static int read_midx_checksum(const char *object_dir)
 	m = setup_midx(object_dir);
 	if (!m)
 		return 1;
-	printf("%s\n", hash_to_hex(get_midx_checksum(m)));
+	printf("%s\n", midx_get_checksum_hex(m));
 
 	close_midx(m);
 	return 0;

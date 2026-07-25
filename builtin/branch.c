@@ -228,7 +228,7 @@ static int delete_branches(int argc, const char **argv, int force, int kinds,
 	int ret = 0;
 	int remote_branch = 0;
 	struct strbuf bname = STRBUF_INIT;
-	unsigned allowed_interpret;
+	enum interpret_branch_kind allowed_interpret;
 	struct string_list refs_to_delete = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	int branch_name_pos;
@@ -706,6 +706,29 @@ static int edit_branch_description(const char *branch_name)
 	return 0;
 }
 
+static void die_if_upstream_looks_like_remote(const char *new_upstream, const char *branch_name)
+{
+	struct strbuf remote_ref = STRBUF_INIT;
+	int code;
+
+	if (strchr(new_upstream, '/') ||
+	    !remote_is_configured(remote_get(new_upstream), 0))
+		return;
+
+	strbuf_addf(&remote_ref, "refs/remotes/%s/%s", new_upstream, branch_name);
+	if (!refs_ref_exists(get_main_ref_store(the_repository), remote_ref.buf)) {
+		strbuf_release(&remote_ref);
+		return;
+	}
+
+	code = die_message(_("--set-upstream-to takes a single <remote>/<branch> argument"));
+	advise_if_enabled(ADVICE_SET_UPSTREAM_FAILURE,
+			  _("Did you mean to use: git branch --set-upstream-to=%s/%s?"),
+			  new_upstream, branch_name);
+	strbuf_release(&remote_ref);
+	exit(code);
+}
+
 int cmd_branch(int argc,
 	       const char **argv,
 	       const char *prefix,
@@ -724,6 +747,7 @@ int cmd_branch(int argc,
 	static struct ref_sorting *sorting;
 	struct string_list sorting_options = STRING_LIST_INIT_DUP;
 	struct ref_format format = REF_FORMAT_INIT;
+	struct repo_config_values *cfg = repo_config_values(the_repository);
 	int ret;
 
 	struct option options[] = {
@@ -795,7 +819,7 @@ int cmd_branch(int argc,
 	if (!sorting_options.nr)
 		string_list_append(&sorting_options, "refname");
 
-	track = git_branch_track;
+	track = cfg->branch_track;
 
 	head = refs_resolve_refdup(get_main_ref_store(the_repository), "HEAD",
 				   0, &head_oid, NULL);
@@ -956,6 +980,15 @@ int cmd_branch(int argc,
 		if (!refs_ref_exists(get_main_ref_store(the_repository), branch->refname)) {
 			if (!argc || branch_checked_out(branch->refname))
 				die(_("no commit on branch '%s' yet"), branch->name);
+			/*
+			 * Check the advice up front to avoid the ref
+			 * lookups when the hint is off. The helper still
+			 * calls advise_if_enabled() so the hint carries the
+			 * standard "disable this message" instructions.
+			 */
+			if (argc == 1 &&
+			    advice_enabled(ADVICE_SET_UPSTREAM_FAILURE))
+				die_if_upstream_looks_like_remote(new_upstream, argv[0]);
 			die(_("branch '%s' does not exist"), branch->name);
 		}
 

@@ -13,6 +13,7 @@
 #include "symlinks.h"
 #include "trace2.h"
 #include "win32.h"
+#include "win32/exit-process.h"
 #include "win32/lazyload.h"
 #include "wrapper.h"
 #include <aclapi.h>
@@ -2251,16 +2252,26 @@ int mingw_execvp(const char *cmd, char *const *argv)
 int mingw_kill(pid_t pid, int sig)
 {
 	if (pid > 0 && sig == SIGTERM) {
-		HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+		HANDLE h = OpenProcess(PROCESS_CREATE_THREAD |
+				       PROCESS_QUERY_INFORMATION |
+				       PROCESS_VM_OPERATION | PROCESS_VM_WRITE |
+				       PROCESS_VM_READ | PROCESS_TERMINATE,
+				       FALSE, pid);
+		int ret;
 
-		if (TerminateProcess(h, -1)) {
-			CloseHandle(h);
-			return 0;
+		if (h)
+			ret = exit_process(h, 128 + sig);
+		else {
+			h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+			if (!h) {
+				errno = err_win_to_posix(GetLastError());
+				return -1;
+			}
+			ret = terminate_process_tree(h, 128 + sig);
 		}
-
-		errno = err_win_to_posix(GetLastError());
-		CloseHandle(h);
-		return -1;
+		if (ret)
+			errno = err_win_to_posix(GetLastError());
+		return ret;
 	} else if (pid > 0 && sig == 0) {
 		HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
 		if (h) {
@@ -3392,7 +3403,7 @@ int is_valid_win32_path(const char *path, int allow_literal_nul)
 	const char *p = path;
 	int preceding_space_or_period = 0, i = 0, periods = 0;
 
-	if (!protect_ntfs)
+	if (!repo_protect_ntfs(the_repository))
 		return 1;
 
 	skip_dos_drive_prefix((char **)&path);
@@ -3610,7 +3621,14 @@ static void adjust_symlink_flags(void)
 		symlink_file_flags |= 2;
 		symlink_directory_flags |= 2;
 	}
+}
 
+static BOOL WINAPI handle_ctrl_c(DWORD ctrl_type)
+{
+	if (ctrl_type != CTRL_C_EVENT)
+		return FALSE; /* we did not handle this */
+	mingw_raise(SIGINT);
+	return TRUE; /* we did handle this */
 }
 
 #ifdef _MSC_VER
@@ -3646,6 +3664,8 @@ int wmain(int argc, const wchar_t **wargv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
 #endif
+
+	SetConsoleCtrlHandler(handle_ctrl_c, TRUE);
 
 	maybe_redirect_std_handles();
 	adjust_symlink_flags();

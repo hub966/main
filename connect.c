@@ -517,7 +517,7 @@ static void send_capabilities(int fd_out, struct packet_reader *reader)
 int get_remote_bundle_uri(int fd_out, struct packet_reader *reader,
 			  struct bundle_list *bundles, int stateless_rpc)
 {
-	int line_nr = 1;
+	int line_nr = 1, err = 0;
 
 	/* Assert bundle-uri support */
 	ensure_server_supports_v2("bundle-uri");
@@ -536,10 +536,19 @@ int get_remote_bundle_uri(int fd_out, struct packet_reader *reader,
 		const char *line = reader->line;
 		line_nr++;
 
+		/*
+		 * Do not parse if an error was encountered, but
+		 * continue draining the response so no stale data
+		 * is left in the reader for subsequent protocol
+		 * exchanges.
+		 */
+		if (err)
+			continue;
+
 		if (!bundle_uri_parse_line(bundles, line))
 			continue;
 
-		return error(_("error on bundle-uri response line %d: %s"),
+		err = error(_("error on bundle-uri response line %d: %s"),
 			     line_nr, line);
 	}
 
@@ -554,7 +563,7 @@ int get_remote_bundle_uri(int fd_out, struct packet_reader *reader,
 	check_stateless_delimiter(stateless_rpc, reader,
 				  _("expected response end packet after ref listing"));
 
-	return 0;
+	return err;
 }
 
 struct ref **get_remote_refs(int fd_out, struct packet_reader *reader,
@@ -1399,7 +1408,7 @@ static void fill_ssh_args(struct child_process *conn, const char *ssh_host,
  * the connection failed).
  */
 struct child_process *git_connect(int fd[2], const char *url,
-				  const char *name,
+				  enum git_connect_service service,
 				  const char *prog, int flags)
 {
 	char *hostandport, *path;
@@ -1413,7 +1422,7 @@ struct child_process *git_connect(int fd[2], const char *url,
 	 * fetch, ls-remote, etc), then fallback to v0 since we don't know how
 	 * to do anything else (like push or remote archive) via v2.
 	 */
-	if (version == protocol_v2 && strcmp("git-upload-pack", name))
+	if (version == protocol_v2 && service != GIT_CONNECT_UPLOAD_PACK)
 		version = protocol_v0;
 
 	/* Without this we cannot rely on waitpid() to tell

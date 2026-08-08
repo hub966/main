@@ -36,12 +36,16 @@ static struct commit *peel_committish(struct repository *repo,
 {
 	struct object *obj;
 	struct object_id oid;
+	struct commit *commit;
 
 	if (repo_get_oid(repo, name, &oid))
 		die(_("'%s' is not a valid commit-ish for %s"), name, mode);
 	obj = parse_object_or_die(repo, &oid, name);
-	return (struct commit *)repo_peel_to_type(repo, name, 0, obj,
-						  OBJ_COMMIT);
+	commit = (struct commit *)repo_peel_to_type(repo, name, 0, obj,
+						    OBJ_COMMIT);
+	if (!commit)
+		die(_("'%s' does not point to a commit for %s"), name, mode);
+	return commit;
 }
 
 static char *get_author(const char *message)
@@ -120,7 +124,7 @@ static struct commit *create_commit(struct repository *repo,
 out:
 	repo_unuse_commit_buffer(repo, based_on, message);
 	free_commit_extra_headers(extra);
-	free_commit_list(parents);
+	commit_list_free(parents);
 	strbuf_release(&msg);
 	free(author);
 	return (struct commit *)obj;
@@ -351,10 +355,10 @@ void replay_result_release(struct replay_result *result)
 	free(result->updates);
 }
 
-static void replay_result_queue_update(struct replay_result *result,
-				       const char *refname,
-				       const struct object_id *old_oid,
-				       const struct object_id *new_oid)
+void replay_result_queue_update(struct replay_result *result,
+				const char *refname,
+				const struct object_id *old_oid,
+				const struct object_id *new_oid)
 {
 	ALLOC_GROW(result->updates, result->updates_nr + 1, result->updates_alloc);
 	result->updates[result->updates_nr].refname = xstrdup(refname);

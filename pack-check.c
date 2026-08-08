@@ -69,7 +69,7 @@ static int verify_packfile(struct repository *r,
 	if (!is_pack_valid(p))
 		return error("packfile %s cannot be accessed", p->pack_name);
 
-	r->hash_algo->init_fn(&ctx);
+	git_hash_init(&ctx, r->hash_algo);
 	do {
 		unsigned long remaining;
 		unsigned char *in = use_pack(p, w_curs, offset, &remaining);
@@ -143,9 +143,8 @@ static int verify_packfile(struct repository *r,
 			data = NULL;
 			data_valid = 0;
 		} else {
-			unsigned long sz;
-			data = unpack_entry(r, p, entries[i].offset, &type, &sz);
-			size = sz;
+			data = unpack_entry(r, p, entries[i].offset, &type,
+					    &size);
 			data_valid = 1;
 		}
 

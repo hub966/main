@@ -3,6 +3,7 @@
 
 #include "object.h"
 #include "odb.h"
+#include "odb/transaction.h"
 
 enum odb_source_type {
 	/*
@@ -13,6 +14,15 @@ enum odb_source_type {
 
 	/* The "files" backend that uses loose objects and packfiles. */
 	ODB_SOURCE_FILES,
+
+	/* The "loose" backend that uses loose objects, only. */
+	ODB_SOURCE_LOOSE,
+
+	/* The "packed" backend that uses packfiles. */
+	ODB_SOURCE_PACKED,
+
+	/* The "in-memory" backend that stores objects in memory. */
+	ODB_SOURCE_INMEMORY,
 };
 
 struct object_id;
@@ -74,11 +84,12 @@ struct odb_source {
 	void (*close)(struct odb_source *source);
 
 	/*
-	 * This callback is expected to clear underlying caches of the object
-	 * database source. The function is called when the repository has for
-	 * example just been repacked so that new objects will become visible.
+	 * This callback is expected to prepare the source so that it becomes
+	 * ready for use. It optionally clears underlying caches of the object
+	 * database source.
 	 */
-	void (*reprepare)(struct odb_source *source);
+	void (*prepare)(struct odb_source *source,
+			enum odb_prepare_flags flags);
 
 	/*
 	 * This callback is expected to read object information from the object
@@ -193,7 +204,7 @@ struct odb_source {
 	 * return 0 on success, a negative error code otherwise.
 	 */
 	int (*write_object)(struct odb_source *source,
-			    const void *buf, unsigned long len,
+			    const void *buf, size_t len,
 			    enum object_type type,
 			    struct object_id *oid,
 			    struct object_id *compat_oid,
@@ -222,7 +233,8 @@ struct odb_source {
 	 * negative error code otherwise.
 	 */
 	int (*begin_transaction)(struct odb_source *source,
-				 struct odb_transaction **out);
+				 struct odb_transaction **out,
+				 enum odb_transaction_flags flags);
 
 	/*
 	 * This callback is expected to read the list of alternate object
@@ -299,13 +311,14 @@ static inline void odb_source_close(struct odb_source *source)
 }
 
 /*
- * Reprepare the object database source and clear any caches. Depending on the
+ * Prepare the object database source and clear any caches. Depending on the
  * backend used this may have the effect that concurrently-written objects
  * become visible.
  */
-static inline void odb_source_reprepare(struct odb_source *source)
+static inline void odb_source_prepare(struct odb_source *source,
+				      enum odb_prepare_flags flags)
 {
-	source->reprepare(source);
+	source->prepare(source, flags);
 }
 
 /*
@@ -338,7 +351,7 @@ static inline int odb_source_read_object_stream(struct odb_read_stream **out,
  * are only iterated over once.
  *
  * The optional `request` structure serves as a template for retrieving the
- * object info for each indvidual iterated object and will be populated as if
+ * object info for each individual iterated object and will be populated as if
  * `odb_source_read_object_info()` was called on the object. It will not be
  * modified, the callback will instead be invoked with a separate `struct
  * object_info` for every object. Object info will not be read when passing a
@@ -461,9 +474,10 @@ static inline int odb_source_write_alternate(struct odb_source *source,
  * Returns 0 on success, a negative error code otherwise.
  */
 static inline int odb_source_begin_transaction(struct odb_source *source,
-					       struct odb_transaction **out)
+					       struct odb_transaction **out,
+					       enum odb_transaction_flags flags)
 {
-	return source->begin_transaction(source, out);
+	return source->begin_transaction(source, out, flags);
 }
 
 #endif

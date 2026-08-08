@@ -124,7 +124,7 @@ test_expect_success 'netrc authorized but forbidden credentials (fail on 403)' '
 	set_netrc 127.0.0.1 forbidden-user@host pass@host &&
 	test_must_fail git clone "$HTTPD_URL/auth/dumb/repo.git" clone-auth-netrc-403 2>err &&
 	expect_askpass none &&
-	grep "The requested URL returned error: 403" err
+	test_grep "The requested URL returned error: 403" err
 '
 
 test_expect_success 'http auth can use user/pass in URL' '
@@ -280,7 +280,7 @@ test_expect_success 'http-fetch --packfile' '
 		--index-pack-arg=--keep \
 		"$HTTPD_URL"/dumb/repo_pack.git/$p >out &&
 
-	grep -E "^keep.[0-9a-f]{16,}$" out &&
+	test_grep -E "^keep.[0-9a-f]{16,}$" out &&
 	cut -c6- out >packhash &&
 
 	# Ensure that the expected files are generated
@@ -553,6 +553,26 @@ test_expect_success 'dumb http can fetch index v1' '
 
 	git clone "$HTTPD_URL/dumb/idx-v1.git" &&
 	git -C idx-v1 fsck
+'
+
+test_expect_success 'absolute-path alternate when url has no path' '
+	src=$HTTPD_DOCUMENT_ROOT_PATH/repo.git &&
+	alt=absolute-alt.git &&
+	git clone --bare --shared "$src" "$alt" &&
+
+	# Our repo has an alternate pointing to the absolute filesystem path,
+	# but that will not make any sense to an http client. So we will
+	# manually give it the equivalent path that the http server will
+	# understand.
+	echo "/dumb/repo.git/objects" >"$alt/objects/info/http-alternates" &&
+
+	# Now make our alt repository available at the root of the http
+	# server without any path (i.e., just http://localhost:1234).
+	git -C "$alt" update-server-info &&
+	mv absolute-alt.git/* "$HTTPD_DOCUMENT_ROOT_PATH" &&
+
+	git -c http.followRedirects=true clone "$HTTPD_URL" alt-clone.git 2>err &&
+	test_grep "adding alternate object store: $HTTPD_URL/dumb/repo.git" err
 '
 
 test_done

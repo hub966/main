@@ -60,8 +60,8 @@ static int diff_suppress_blank_empty;
 static enum git_colorbool diff_use_color_default = GIT_COLOR_UNKNOWN;
 static int diff_color_moved_default;
 static int diff_color_moved_ws_default;
-static int diff_context_default = 3;
-static int diff_interhunk_context_default;
+static unsigned int diff_context_default = 3;
+static unsigned int diff_interhunk_context_default;
 static char *diff_word_regex_cfg;
 static struct external_diff external_diff_cfg;
 static char *diff_order_file_cfg;
@@ -382,16 +382,17 @@ int git_diff_ui_config(const char *var, const char *value,
 		return 0;
 	}
 	if (!strcmp(var, "diff.context")) {
-		diff_context_default = git_config_int(var, value, ctx->kvi);
-		if (diff_context_default < 0)
+		int val = git_config_int(var, value, ctx->kvi);
+		if (val < 0)
 			return -1;
+		diff_context_default = val;
 		return 0;
 	}
 	if (!strcmp(var, "diff.interhunkcontext")) {
-		diff_interhunk_context_default = git_config_int(var, value,
-								ctx->kvi);
-		if (diff_interhunk_context_default < 0)
+		int val = git_config_int(var, value, ctx->kvi);
+		if (val < 0)
 			return -1;
+		diff_interhunk_context_default = val;
 		return 0;
 	}
 	if (!strcmp(var, "diff.renames")) {
@@ -3611,8 +3612,9 @@ static unsigned char *deflate_it(char *data,
 	int bound;
 	unsigned char *deflated;
 	git_zstream stream;
+	struct repo_config_values *cfg = repo_config_values(the_repository);
 
-	git_deflate_init(&stream, zlib_compression_level);
+	git_deflate_init(&stream, cfg->zlib_compression_level);
 	bound = git_deflate_bound(&stream, size);
 	deflated = xmalloc(bound);
 	stream.next_out = deflated;
@@ -4593,8 +4595,9 @@ int diff_populate_filespec(struct repository *r,
 		}
 	}
 	else {
+		size_t size_st = 0;
 		struct object_info info = {
-			.sizep = &s->size
+			.sizep = &size_st
 		};
 
 		if (!(size_only || check_binary))
@@ -4616,6 +4619,7 @@ int diff_populate_filespec(struct repository *r,
 			die("unable to read %s", oid_to_hex(&s->oid));
 
 object_read:
+		s->size = cast_size_t_to_ulong(size_st);
 		if (size_only || check_binary) {
 			if (size_only)
 				return 0;
@@ -4630,6 +4634,7 @@ object_read:
 			if (odb_read_object_info_extended(r->objects, &s->oid, &info,
 							  OBJECT_INFO_LOOKUP_REPLACE))
 				die("unable to read %s", oid_to_hex(&s->oid));
+			s->size = cast_size_t_to_ulong(size_st);
 		}
 		s->should_free = 1;
 	}
@@ -5946,9 +5951,12 @@ static int diff_opt_unified(const struct option *opt,
 	BUG_ON_OPT_NEG(unset);
 
 	if (arg) {
-		options->context = strtol(arg, &s, 10);
+		long val = strtol(arg, &s, 10);
 		if (*s)
 			return error(_("%s expects a numerical value"), "--unified");
+		if (val < 0)
+			return error(_("%s expects a non-negative integer"), "--unified");
+		options->context = val;
 	}
 	enable_patch_output(&options->output_format);
 
@@ -6133,9 +6141,8 @@ struct option *add_diff_options(const struct option *opts,
 		OPT_CALLBACK_F(0, "default-prefix", options, NULL,
 			       N_("use default prefixes a/ and b/"),
 			       PARSE_OPT_NONEG | PARSE_OPT_NOARG, diff_opt_default_prefix),
-		OPT_INTEGER_F(0, "inter-hunk-context", &options->interhunkcontext,
-			      N_("show context between diff hunks up to the specified number of lines"),
-			      PARSE_OPT_NONEG),
+		OPT_UNSIGNED(0, "inter-hunk-context", &options->interhunkcontext,
+			     N_("show context between diff hunks up to the specified number of lines")),
 		OPT_CALLBACK_F(0, "output-indicator-new",
 			       &options->output_indicators[OUTPUT_INDICATOR_NEW],
 			       N_("<char>"),
@@ -6848,7 +6855,7 @@ void flush_one_hunk(struct object_id *result, struct git_hash_ctx *ctx)
 	int i;
 
 	git_hash_final(hash, ctx);
-	the_hash_algo->init_fn(ctx);
+	git_hash_init(ctx, the_hash_algo);
 	/* 20-byte sum, with carry */
 	for (i = 0; i < the_hash_algo->rawsz; ++i) {
 		carry += result->hash[i] + hash[i];
@@ -6892,7 +6899,7 @@ static int diff_get_patch_id(struct diff_options *options, struct object_id *oid
 	struct git_hash_ctx ctx;
 	struct patch_id_t data;
 
-	the_hash_algo->init_fn(&ctx);
+	git_hash_init(&ctx, the_hash_algo);
 	memset(&data, 0, sizeof(struct patch_id_t));
 	data.ctx = &ctx;
 	oidclr(oid, the_repository->hash_algo);
@@ -6980,6 +6987,7 @@ static int diff_get_patch_id(struct diff_options *options, struct object_id *oid
 		flush_one_hunk(oid, &ctx);
 	}
 
+	git_hash_discard(&ctx);
 	return 0;
 }
 

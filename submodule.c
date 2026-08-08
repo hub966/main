@@ -898,12 +898,13 @@ static void collect_changed_submodules(struct repository *r,
 	struct setup_revision_opt s_r_opt = {
 		.assume_dashdash = 1,
 	};
+	struct repo_config_values *cfg = repo_config_values(the_repository);
 
-	save_warning = warn_on_object_refname_ambiguity;
-	warn_on_object_refname_ambiguity = 0;
+	save_warning = cfg->warn_on_object_refname_ambiguity;
+	cfg->warn_on_object_refname_ambiguity = 0;
 	repo_init_revisions(r, &rev, NULL);
 	setup_revisions_from_strvec(argv, &rev, &s_r_opt);
-	warn_on_object_refname_ambiguity = save_warning;
+	cfg->warn_on_object_refname_ambiguity = save_warning;
 	if (prepare_revision_walk(&rev))
 		die(_("revision walk setup failed"));
 
@@ -2389,7 +2390,7 @@ static int validate_submodule_encoded_git_dir(char *git_dir, const char *submodu
 
 	/* Prevent conflicts on case-folding filesystems */
 	repo_config_get_bool(the_repository, "core.ignorecase", &config_ignorecase);
-	if (ignore_case || config_ignorecase) {
+	if (repo_ignore_case(the_repository) || config_ignorecase) {
 		bool suffixes_match = !strcmp(last_submodule_name, submodule_name);
 		return check_casefolding_conflict(git_dir, submodule_name,
 						  suffixes_match);
@@ -2578,7 +2579,7 @@ void absorb_git_dir_into_superproject(const char *path,
 
 		if (err_code != READ_GITFILE_ERR_NOT_A_REPO)
 			/* We don't know what broke here. */
-			read_gitfile_error_die(err_code, path, NULL);
+			read_gitfile_error_die(err_code, path);
 
 		/*
 		* Maybe populated, but no git directory was found?
@@ -2620,19 +2621,18 @@ int get_superproject_working_tree(struct strbuf *buf)
 	int code;
 	ssize_t len;
 
-	if (!is_inside_work_tree())
+	if (!is_inside_work_tree(the_repository))
 		/*
 		 * FIXME:
 		 * We might have a superproject, but it is harder
 		 * to determine.
 		 */
-		return 0;
+		goto out;
 
 	if (!strbuf_realpath(&one_up, "../", 0))
-		return 0;
+		goto out;
 
 	subpath = relative_path(cwd, one_up.buf, &sb);
-	strbuf_release(&one_up);
 
 	prepare_submodule_repo_env(&cp.env);
 	strvec_pop(&cp.env);
@@ -2677,20 +2677,22 @@ int get_superproject_working_tree(struct strbuf *buf)
 		ret = 1;
 		free(super_wt);
 	}
-	free(cwd);
-	strbuf_release(&sb);
 
 	code = finish_command(&cp);
 
 	if (code == 128)
 		/* '../' is not a git repository */
-		return 0;
-	if (code == 0 && len == 0)
+		ret = 0;
+	else if (code == 0 && len == 0)
 		/* There is an unrelated git repository at '../' */
-		return 0;
-	if (code)
+		ret = 0;
+	else if (code)
 		die(_("ls-tree returned unexpected return code %d"), code);
 
+out:
+	strbuf_release(&sb);
+	strbuf_release(&one_up);
+	free(cwd);
 	return ret;
 }
 

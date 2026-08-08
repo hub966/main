@@ -235,23 +235,20 @@ static int prepare_include_condition_pattern(const struct key_value_info *kvi,
 	return 0;
 }
 
-static int include_by_gitdir(const struct key_value_info *kvi,
-			     const struct config_options *opts,
-			     const char *cond, size_t cond_len, int icase)
+static int include_by_path(const struct key_value_info *kvi,
+			   const char *path,
+			   const char *cond, size_t cond_len, int icase)
 {
 	struct strbuf text = STRBUF_INIT;
 	struct strbuf pattern = STRBUF_INIT;
 	size_t prefix;
 	int ret = 0;
-	const char *git_dir;
 	int already_tried_absolute = 0;
 
-	if (opts->git_dir)
-		git_dir = opts->git_dir;
-	else
+	if (!path)
 		goto done;
 
-	strbuf_realpath(&text, git_dir, 1);
+	strbuf_realpath(&text, path, 1);
 	strbuf_add(&pattern, cond, cond_len);
 	ret = prepare_include_condition_pattern(kvi, &pattern, &prefix);
 	if (ret < 0)
@@ -284,7 +281,7 @@ again:
 		 * which'll do the right thing
 		 */
 		strbuf_reset(&text);
-		strbuf_add_absolute_path(&text, git_dir);
+		strbuf_add_absolute_path(&text, path);
 		already_tried_absolute = 1;
 		goto again;
 	}
@@ -400,9 +397,15 @@ static int include_condition_is_true(const struct key_value_info *kvi,
 	const struct config_options *opts = inc->opts;
 
 	if (skip_prefix_mem(cond, cond_len, "gitdir:", &cond, &cond_len))
-		return include_by_gitdir(kvi, opts, cond, cond_len, 0);
+		return include_by_path(kvi, opts->git_dir, cond, cond_len, 0);
 	else if (skip_prefix_mem(cond, cond_len, "gitdir/i:", &cond, &cond_len))
-		return include_by_gitdir(kvi, opts, cond, cond_len, 1);
+		return include_by_path(kvi, opts->git_dir, cond, cond_len, 1);
+	else if (skip_prefix_mem(cond, cond_len, "worktree:", &cond, &cond_len))
+		return include_by_path(kvi, inc->repo ? repo_get_work_tree(inc->repo) : NULL,
+				       cond, cond_len, 0);
+	else if (skip_prefix_mem(cond, cond_len, "worktree/i:", &cond, &cond_len))
+		return include_by_path(kvi, inc->repo ? repo_get_work_tree(inc->repo) : NULL,
+				       cond, cond_len, 1);
 	else if (skip_prefix_mem(cond, cond_len, "onbranch:", &cond, &cond_len))
 		return include_by_branch(inc, cond, cond_len);
 	else if (skip_prefix_mem(cond, cond_len, "hasconfig:remote.*.url:", &cond,
@@ -536,11 +539,14 @@ static inline int iskeychar(int c)
  * -2 if there is no section name in the key.
  *
  * store_key - pointer to char* which will hold a copy of the key with
- *             lowercase section and variable name
+ *             lowercase section and variable name, can be NULL to skip
+ *             allocation when only validation is needed
  * baselen - pointer to size_t which will hold the length of the
  *           section + subsection part, can be NULL
+ * quiet - when non-zero, suppress error() reports on rejection
  */
-int git_config_parse_key(const char *key, char **store_key, size_t *baselen_)
+static int do_parse_config_key(const char *key, char **store_key,
+			       size_t *baselen_, int quiet)
 {
 	size_t i, baselen;
 	int dot;
@@ -552,12 +558,14 @@ int git_config_parse_key(const char *key, char **store_key, size_t *baselen_)
 	 */
 
 	if (last_dot == NULL || last_dot == key) {
-		error(_("key does not contain a section: %s"), key);
+		if (!quiet)
+			error(_("key does not contain a section: %s"), key);
 		return -CONFIG_NO_SECTION_OR_NAME;
 	}
 
 	if (!last_dot[1]) {
-		error(_("key does not contain variable name: %s"), key);
+		if (!quiet)
+			error(_("key does not contain variable name: %s"), key);
 		return -CONFIG_NO_SECTION_OR_NAME;
 	}
 
@@ -568,7 +576,8 @@ int git_config_parse_key(const char *key, char **store_key, size_t *baselen_)
 	/*
 	 * Validate the key and while at it, lower case it for matching.
 	 */
-	*store_key = xmallocz(strlen(key));
+	if (store_key)
+		*store_key = xmallocz(strlen(key));
 
 	dot = 0;
 	for (i = 0; key[i]; i++) {
@@ -579,22 +588,36 @@ int git_config_parse_key(const char *key, char **store_key, size_t *baselen_)
 		if (!dot || i > baselen) {
 			if (!iskeychar(c) ||
 			    (i == baselen + 1 && !isalpha(c))) {
-				error(_("invalid key: %s"), key);
+				if (!quiet)
+					error(_("invalid key: %s"), key);
 				goto out_free_ret_1;
 			}
 			c = tolower(c);
 		} else if (c == '\n') {
-			error(_("invalid key (newline): %s"), key);
+			if (!quiet)
+				error(_("invalid key (newline): %s"), key);
 			goto out_free_ret_1;
 		}
-		(*store_key)[i] = c;
+		if (store_key)
+			(*store_key)[i] = c;
 	}
 
 	return 0;
 
 out_free_ret_1:
-	FREE_AND_NULL(*store_key);
+	if (store_key)
+		FREE_AND_NULL(*store_key);
 	return -CONFIG_INVALID_KEY;
+}
+
+int git_config_parse_key(const char *key, char **store_key, size_t *baselen_)
+{
+	return do_parse_config_key(key, store_key, baselen_, 0);
+}
+
+int git_config_key_is_valid(const char *key)
+{
+	return !do_parse_config_key(key, NULL, NULL, 1);
 }
 
 static int config_parse_pair(const char *key, const char *value,
@@ -1442,7 +1465,7 @@ int git_config_from_blob_oid(config_fn_t fn,
 {
 	enum object_type type;
 	char *buf;
-	unsigned long size;
+	size_t size;
 	int ret;
 
 	buf = odb_read_object(repo->objects, oid, &type, &size);

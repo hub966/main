@@ -32,7 +32,7 @@ struct replay_revisions_options {
 
 	/*
 	 * Starting point at which to create the new commits; must be a
-	 * committish. References pointing at decendants of `onto` will be
+	 * committish. References pointing at descendants of `onto` will be
 	 * updated to point to the new commits.
 	 */
 	const char *onto;
@@ -79,6 +79,11 @@ struct replay_result {
 };
 
 void replay_result_release(struct replay_result *result);
+
+void replay_result_queue_update(struct replay_result *result,
+				const char *refname,
+				const struct object_id *old_oid,
+				const struct object_id *new_oid);
 
 /*
  * Replay a set of commits onto a new location. Leaves both the working tree,

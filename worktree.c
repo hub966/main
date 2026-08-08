@@ -123,8 +123,8 @@ static struct worktree *get_main_worktree(int skip_reading_head)
 	worktree->repo = the_repository;
 	worktree->path = strbuf_detach(&worktree_path, NULL);
 	worktree->is_current = is_current_worktree(worktree);
-	worktree->is_bare = (is_bare_repository_cfg == 1) ||
-		is_bare_repository() ||
+	worktree->is_bare = (the_repository->bare_cfg == 1) ||
+		is_bare_repository(the_repository) ||
 		/*
 		 * When in a secondary worktree we have to also verify if the main
 		 * worktree is bare in $commondir/config.worktree.
@@ -1104,7 +1104,7 @@ void write_worktree_linking_files(const char *dotgit, const char *gitdir,
 	strbuf_realpath(&repo, repo.buf, 1);
 
 	if (use_relative_paths && !the_repository->repository_format_relative_worktrees) {
-		if (upgrade_repository_format(1) < 0)
+		if (upgrade_repository_format(the_repository, 1) < 0)
 			die(_("unable to upgrade repository format to support relative worktrees"));
 		if (repo_config_set_gently(the_repository, "extensions.relativeWorktrees", "true"))
 			die(_("unable to set extensions.relativeWorktrees setting"));

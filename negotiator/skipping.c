@@ -143,8 +143,7 @@ static int push_parent(struct data *data, struct entry *entry,
 		/*
 		 * Find the existing entry and use it.
 		 */
-		for (size_t i = 0; i < data->rev_list.nr; i++) {
-			parent_entry = data->rev_list.array[i].data;
+		prio_queue_for_each(&data->rev_list, parent_entry) {
 			if (parent_entry->commit == to_push)
 				goto parent_found;
 		}
@@ -181,10 +180,12 @@ static const struct object_id *get_rev(struct data *data)
 		struct commit_list *p;
 		int parent_pushed = 0;
 
-		if (data->rev_list.nr == 0 || data->non_common_revs == 0)
+		if (data->non_common_revs == 0)
 			return NULL;
 
 		entry = prio_queue_get(&data->rev_list);
+		if (!entry)
+			return NULL;
 		commit = entry->commit;
 		commit->object.flags |= POPPED;
 		if (!(commit->object.flags & COMMON))
@@ -243,11 +244,19 @@ static int ack(struct fetch_negotiator *n, struct commit *c)
 	return known_to_be_common;
 }
 
+static void have_sent(struct fetch_negotiator *n, struct commit *c)
+{
+	if (repo_parse_commit(the_repository, c))
+		return;
+	mark_common(n->data, c);
+}
+
 static void release(struct fetch_negotiator *n)
 {
 	struct data *data = n->data;
-	for (size_t i = 0; i < data->rev_list.nr; i++)
-		free(data->rev_list.array[i].data);
+	void *entry;
+	prio_queue_for_each(&data->rev_list, entry)
+		free(entry);
 	clear_prio_queue(&data->rev_list);
 	FREE_AND_NULL(data);
 }
@@ -259,6 +268,7 @@ void skipping_negotiator_init(struct fetch_negotiator *negotiator)
 	negotiator->add_tip = add_tip;
 	negotiator->next = next;
 	negotiator->ack = ack;
+	negotiator->have_sent = have_sent;
 	negotiator->release = release;
 	negotiator->data = CALLOC_ARRAY(data, 1);
 	data->rev_list.compare = compare;

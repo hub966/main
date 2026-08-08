@@ -1750,6 +1750,7 @@ static int curl_append_msgs_to_imap(struct imap_server_conf *server,
 
 	curl_easy_cleanup(curl);
 	curl_global_cleanup();
+	strbuf_release(&msgbuf.buf);
 
 	if (cred.username) {
 		if (res == CURLE_OK)
@@ -1799,7 +1800,7 @@ int cmd_main(int argc, const char **argv)
 	int nongit_ok;
 	int ret;
 
-	setup_git_directory_gently(&nongit_ok);
+	setup_git_directory_gently(the_repository, &nongit_ok);
 	repo_config(the_repository, git_imap_config, &server);
 
 	argc = parse_options(argc, (const char **)argv, "", imap_send_options, imap_send_usage, 0);

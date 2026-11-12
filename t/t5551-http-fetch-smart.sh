@@ -481,6 +481,7 @@ test_expect_success 'test allowanysha1inwant with unreachable' '
 '
 
 test_expect_success EXPENSIVE 'http can handle enormous ref negotiation' '
+	test_when_finished "rm -f tags" &&
 	(
 		cd "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
 		create_tags 2001 50000
@@ -780,6 +781,13 @@ test_expect_success 'tag following always works over v0 http' '
 	git -C "$upstream" for-each-ref refs/tags >expect &&
 	git -C tags for-each-ref >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'ls-remote outside repo does not segfault with fetch refspec' '
+	nongit git \
+		-c remote.origin.url="$HTTPD_URL/smart/repo.git" \
+		-c remote.origin.fetch=anything \
+		ls-remote origin
 '
 
 test_done

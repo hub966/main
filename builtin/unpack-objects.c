@@ -23,13 +23,12 @@
 static int dry_run, quiet, recover, has_errors, strict;
 static const char unpack_usage[] = "git unpack-objects [-n] [-q] [-r] [--strict]";
 
-/* We always read in 4kB chunks. */
-static unsigned char buffer[4096];
+static unsigned char buffer[DEFAULT_IO_BUFFER_SIZE];
 static unsigned int offset, len;
 static off_t consumed_bytes;
 static off_t max_input_size;
 static struct git_hash_ctx ctx;
-static struct fsck_options fsck_options = FSCK_OPTIONS_STRICT;
+static struct fsck_options fsck_options;
 static struct progress *progress;
 
 /*
@@ -449,7 +448,7 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 		if (!delta_data)
 			return;
 		if (odb_has_object(the_repository->objects, &base_oid,
-				   HAS_OBJECT_RECHECK_PACKED | HAS_OBJECT_FETCH_PROMISOR))
+				   ODB_HAS_OBJECT_RECHECK_PACKED | ODB_HAS_OBJECT_FETCH_PROMISOR))
 			; /* Ok we have this one */
 		else if (resolve_against_held(nr, &base_oid,
 					      delta_data, delta_size))
@@ -533,7 +532,7 @@ static void unpack_one(unsigned nr)
 {
 	unsigned shift;
 	unsigned char *pack;
-	unsigned long size, c;
+	size_t size, c;
 	enum object_type type;
 
 	obj_list[nr].offset = consumed_bytes;
@@ -545,6 +544,8 @@ static void unpack_one(unsigned nr)
 	size = (c & 15);
 	shift = 4;
 	while (c & 0x80) {
+		if ((bitsizeof(size_t) - 7) < shift)
+			die(_("object size too large for this platform"));
 		pack = fill(1);
 		c = *pack;
 		use(1);
@@ -613,7 +614,7 @@ static void unpack_all(void)
 int cmd_unpack_objects(int argc,
 		       const char **argv,
 		       const char *prefix UNUSED,
-		       struct repository *repo UNUSED)
+		       struct repository *repo)
 {
 	int i;
 	struct object_id oid;
@@ -626,6 +627,8 @@ int cmd_unpack_objects(int argc,
 	quiet = !isatty(2);
 
 	show_usage_if_asked(argc, argv, unpack_usage);
+
+	fsck_options_init(&fsck_options, repo, FSCK_OPTIONS_STRICT);
 
 	for (i = 1 ; i < argc; i++) {
 		const char *arg = argv[i];

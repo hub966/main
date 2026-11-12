@@ -29,7 +29,7 @@ alpine-*)
 	apk add --update shadow sudo meson ninja-build gcc libc-dev curl-dev openssl-dev expat-dev gettext \
 		zlib-ng-dev pcre2-dev python3 musl-libintl perl-utils ncurses \
 		apache2 apache2-http2 apache2-proxy apache2-ssl apache2-webdav apr-util-dbd_sqlite3 \
-		bash cvs gnupg perl-cgi perl-dbd-sqlite perl-io-tty >/dev/null
+		bash cvs gnupg perl-cgi perl-dbd-sqlite perl-io-tty cargo >/dev/null
 	;;
 fedora-*|almalinux-*)
 	case "$jobname" in
@@ -74,6 +74,17 @@ ubuntu-*|i386/ubuntu-*|debian-*)
 	if test -f /etc/alternatives/sudo
 	then
 		sudo update-alternatives --set sudo /usr/bin/sudo.ws
+	fi
+
+	# on uutils v0.2.2 from rust-coreutils,
+	#     dirname "foo/."
+	# outputs "." instead of "foo" like it should.
+	# Use GNU coreutils to provide dirname instead.
+	#
+	# See <https://github.com/uutils/coreutils/issues/10508>.
+	if test -x /usr/bin/gnudirname
+	then
+		ln -sfT /usr/bin/gnudirname /usr/bin/dirname
 	fi
 
 	case "$distro" in

@@ -6,11 +6,10 @@
 #include "convert.h"
 #include "environment.h"
 #include "repository.h"
-#include "object-file.h"
 #include "odb.h"
+#include "odb/source.h"
 #include "odb/streaming.h"
 #include "replace-object.h"
-#include "packfile.h"
 
 #define FILTER_BUFFER (1024*16)
 
@@ -158,15 +157,26 @@ static int open_istream_incore(struct odb_read_stream **out,
 		.base.read = read_istream_incore,
 	};
 	struct odb_incore_read_stream *st;
+	unsigned long size_ul;
 	int ret;
 
 	oi.typep = &stream.base.type;
-	oi.sizep = &stream.base.size;
+	/*
+	 * object_info.sizep is unsigned long* (32-bit on Windows), but
+	 * stream.base.size is size_t (64-bit). We use a temporary variable
+	 * because the types are incompatible. Note: this path still truncates
+	 * for >4GB objects, but large objects should use pack streaming
+	 * (packfile_store_read_object_stream) which handles size_t properly.
+	 * This incore fallback is only used for small objects or when pack
+	 * streaming is unavailable.
+	 */
+	oi.sizep = &size_ul;
 	oi.contentp = (void **)&stream.buf;
 	ret = odb_read_object_info_extended(odb, oid, &oi,
 					    OBJECT_INFO_DIE_IF_CORRUPT);
 	if (ret)
 		return ret;
+	stream.base.size = size_ul;
 
 	CALLOC_ARRAY(st, 1);
 	*st = stream;
@@ -186,11 +196,9 @@ static int istream_source(struct odb_read_stream **out,
 	struct odb_source *source;
 
 	odb_prepare_alternates(odb);
-	for (source = odb->sources; source; source = source->next) {
-		if (!packfile_store_read_object_stream(out, source->packfiles, oid) ||
-		    !odb_source_loose_read_object_stream(out, source, oid))
+	for (source = odb->sources; source; source = source->next)
+		if (!odb_source_read_object_stream(out, source, oid))
 			return 0;
-	}
 
 	return open_istream_incore(out, odb, oid);
 }
